@@ -14,6 +14,14 @@
     "node": ">=20"
   },
   "author": "ys",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/2404723600/dsh-router-loomy.git"
+  },
+  "homepage": "https://github.com/2404723600/dsh-router-loomy#readme",
+  "bugs": {
+    "url": "https://github.com/2404723600/dsh-router-loomy/issues"
+  },
   "keywords": [
     "dsh",
     "dsh-router",
