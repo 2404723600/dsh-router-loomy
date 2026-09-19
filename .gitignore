@@ -21,4 +21,8 @@ coverage/
 # 本地环境变量（可能含密钥，禁止提交）
 .env
 .env.*
+
 !.env.example
+
+# 本地 AI 助手工作数据
+.workbuddy-ai/
