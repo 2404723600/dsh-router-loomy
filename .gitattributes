@@ -1,0 +1,6 @@
+# 统一行尾，避免跨平台检出差异
+* text=auto eol=lf
+
+# Windows 脚本保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

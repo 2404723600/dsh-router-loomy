@@ -1,0 +1,7 @@
+# cordis bundle patch —— 声明本插件是一个 DSH bundle。
+#
+# 用法：profile 的 package.json 中把 "dsh-router-loomy" 加入 dsh.profile.bundles，
+# dsh 启动时按此 patch 把本插件 insert 进插件图（与 dsh-router-traework 同构）。
+- insert:
+    - id: dsh-router-loomy
+      name: dsh-router-loomy

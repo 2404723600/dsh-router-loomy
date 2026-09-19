@@ -1,0 +1,24 @@
+# 依赖
+node_modules/
+
+# 构建产物：lib 不入版本库，由 scripts.prepack / scripts.prepare 在打包或从 git 安装时重建；
+# package.json 的 files 字段已声明 lib，因此 npm 包内仍会包含构建结果。
+lib/
+*.tsbuildinfo
+
+# 打包与覆盖率临时产物
+*.tgz
+coverage/
+
+# 日志与系统文件
+*.log
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+
+# 本地环境变量（可能含密钥，禁止提交）
+.env
+.env.*
+!.env.example

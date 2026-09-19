@@ -1,0 +1,62 @@
+{
+  "name": "dsh-router-loomy",
+  "version": "0.1.0",
+  "description": "DSH plugin: Loomy（讯飞 Loomy 办公助手云端通道，OpenAI 兼容）供应商 —— 通过 router.suppliers 把 loomy 通道接入 dsh-router。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./supplier": "./lib/supplier.js",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "ys",
+  "keywords": [
+    "dsh",
+    "dsh-router",
+    "cordis",
+    "plugin",
+    "supplier",
+    "loomy",
+    "openai-compatible"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "docs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/api/*.test.ts\"",
+    "smoke": "node scripts/smoke.mjs",
+    "prepack": "npm run build",
+    "prepare": "npm run build"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "cordis": "^4.0.0-rc.7"
+  },
+  "peerDependenciesMeta": {
+    "cordis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsdown": "^0.23.0",
+    "typescript": "^7.0.2"
+  }
+}
