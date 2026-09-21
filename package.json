@@ -1,6 +1,6 @@
 {
   "name": "dsh-router-loomy",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH plugin: Loomy（讯飞 Loomy 办公助手云端通道，OpenAI 兼容）供应商 —— 通过 router.suppliers 把 loomy 通道接入 dsh-router。",
   "type": "module",
   "main": "lib/index.js",

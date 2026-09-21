@@ -53,10 +53,15 @@ async function assertOk(response: Response): Promise<void> {
   } catch {
     text = ''
   }
+  // 注意：text() 抛错时 body 可能仍被内部 reader 锁住，此时 cancel() 返回的是
+  // 「已拒绝的 Promise」而非同步抛出 —— 不 await 就接不住，会变成
+  // unhandledRejection 直接打挂宿主进程（dsh 启动期 fatal load failure）。
+  // 另外锁定态下 cancel() 必然拒绝，先判 locked 避免制造无谓的拒绝。
   try {
-    response.body?.cancel()
+    const body = response.body
+    if (body !== null && !body.locked) await body.cancel()
   } catch {
-    // 忽略取消失败
+    // 忽略取消失败：这里只为尽早释放连接，失败不影响错误上报
   }
   throw new UpstreamHttpError(response.status, text)
 }
