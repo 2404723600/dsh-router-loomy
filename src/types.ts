@@ -79,3 +79,32 @@ export interface ResolvedSession {
   /** file 来源时的文件绝对路径。 */
   file?: string
 }
+
+/**
+ * 客户端 / 登录态快照 —— 面板状态页与 status() 共用的「是否已加载」口径。
+ *
+ * 全部字段都来自**缓存读取**（定位结果、运行探测、登录态文件 TTL 缓存），
+ * 因此可以在同步的 status() 里安全调用。
+ */
+export interface LoomyClientSnapshot {
+  /** 是否定位到客户端可执行文件。 */
+  installed: boolean
+  /** 定位到的可执行文件绝对路径。 */
+  exe?: string
+  /** 客户端进程是否在运行；`undefined` = 还没探测过（不是「未运行」）。 */
+  running?: boolean
+  /** 本机登录态是否已加载（auth-session.json 可读且含 session）。 */
+  sessionLoaded: boolean
+  /** 登录态文件绝对路径。 */
+  sessionFile?: string
+  /** 脱敏后的会话串（`2ddf****e606`）。 */
+  sessionMasked?: string
+  /** 账号展示名（`本机客户端 · 132****3519`）。 */
+  nickname?: string
+  /** 登录态里记录的手机号（客户端已脱敏）。 */
+  phone?: string
+  /** 登录态里记录的 Loomy 用户 id。 */
+  userid?: string
+  /** 登录态文件里记录的最后更新时间（客户端写入，可能是 ISO 串）。 */
+  updatedAt?: unknown
+}

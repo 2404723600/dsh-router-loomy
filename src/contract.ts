@@ -12,7 +12,8 @@
  * 契约同步点（core 有改动时同理补齐）：
  *   - SupplierEnv：dataDir / log / store / credentials / onLateFailure?
  *   - SupplierModule：id / name / priority? / icon? / apiKeyHint? / status / listModels
- *     / chatOnce / dispose / removeLink? / addApiKey?
+ *     / chatOnce / dispose / generateLoginUrl? / completeLogin? / pollLogin?
+ *     / removeLink? / addApiKey?
  *   - AccountState 全集与 chatOnce 三种返回形态
  */
 
@@ -144,9 +145,31 @@ export interface SupplierModule {
    */
   chatOnce(uid: string, lv: string, req: ChatRequest): Promise<ChatOnceResult>
   dispose(): void
+  /**
+   * 差异化：生成登录链接（加账号）。
+   *
+   * ⚠️ 核心前端有**短路**：`canApiKey`（有 addApiKey）优先于 URL 登录，
+   * 一旦同时暴露 addApiKey，本方法永远不会被调用（core `SupplierDetail.tsx`
+   * 的 `startLogin`）。要留自动登录就必须**只**暴露这三个登录方法。
+   */
+  generateLoginUrl?(): string | { ok: boolean; error?: string; loginUrl?: string } | Promise<string | { ok: boolean; error?: string; loginUrl?: string }>
+  /** 差异化：回调完成登录（`''` = 轮询式，由插件自行读取凭证）。 */
+  completeLogin?(callbackUrl: string): Promise<{ uid: string; nickname: string }>
+  /**
+   * 差异化：轮询式登录标记。
+   *
+   * **只是能力标记**：核心从不调用它，只在 `capabilities` 里看到它就隐藏
+   * 「粘贴回调链接」步骤、改成「登录成功后点完成添加」。返回值被忽略。
+   */
+  pollLogin?(): boolean
   /** 差异化：删除一个面板添加的 Key 账号（凭证清理归插件）。 */
   removeLink?(uid: string): Promise<boolean>
-  /** 差异化：面板添加 API key 账号（弹窗填名字 + Key）。 */
+  /**
+   * 差异化：面板添加 API key 账号（弹窗填名字 + Key）。
+   *
+   * ⚠️ 与 generateLoginUrl **互斥**（见上）。本插件刻意不暴露它，
+   * 手填会话串改由插件自己的客户端状态页提供。
+   */
   addApiKey?(input: { name: string; apiKey: string }): Promise<{ ok: boolean; error?: string; account?: { uid: string; nickname: string } }>
 }
 

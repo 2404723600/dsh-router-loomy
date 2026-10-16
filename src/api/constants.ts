@@ -42,6 +42,17 @@ export const DEFAULT_MODELS_TTL_MS = 600_000
  */
 export const DEFAULT_SESSION_TTL_MS = 5_000
 
+/**
+ * 上游流式收尾异常时，最多连续触发多少次「扣住 [DONE] 逼核心重试」。
+ *
+ * 上游（讯飞网关）会在生成没结束时就发 `[DONE]` 且不给 `finish_reason`，
+ * 插件扣住 `[DONE]` 让核心按 TRANSPORT 重试即可拿到完整回答。但重试会重发
+ * 整段上下文（实测动辄 10 万 prompt token，按积分计费），所以连续截断到
+ * 这个次数后就不再逼重试，改为补 `length` 收尾标记放行 —— 至少界面能看出
+ * 「被长度截断」，而不是无限烧积分。任一正常收尾都会清零计数。
+ */
+export const MAX_TRUNCATION_RETRIES = 2
+
 /** 本机登录态账号的固定 uid（非面板添加，不可删除）。 */
 export const AUTO_UID = 'local-session'
 
@@ -53,6 +64,38 @@ export const DEFAULT_PUBLIC_DIR = 'C:\\Users\\Public\\Loomy'
 
 /** 登录态文件名。 */
 export const AUTH_SESSION_FILE = 'auth-session.json'
+
+// ---------------------------------------------------------------------------
+// 客户端（Electron 桌面端）定位 / 启动 / 运行探测
+// ---------------------------------------------------------------------------
+
+/** 客户端可执行文件名。 */
+export const CLIENT_EXE_NAME = 'Loomy.exe'
+
+/**
+ * 覆盖客户端可执行文件完整路径的环境变量。
+ *
+ * 客户端安装位置由安装器决定（本机实测 `D:\loomy\Loomy.exe`），注册表里既没有
+ * App Paths 也没有卸载项，只能靠候选路径探测；探不到时用这个变量兜底。
+ */
+export const CLIENT_EXE_ENV = 'LOOMY_CLIENT_EXE'
+
+/** 可执行文件定位结果缓存 TTL（探测要逐个 stat，命中/未命中都缓存）。 */
+export const DEFAULT_LOCATE_TTL_MS = 60_000
+
+/** 运行状态（tasklist）缓存 TTL —— status() 会被面板高频轮询，不能每次都起进程。 */
+export const DEFAULT_RUNNING_TTL_MS = 15_000
+
+/** tasklist 探测超时：探测失败一律当「未运行」，绝不能拖慢面板。 */
+export const TASKLIST_TIMEOUT_MS = 3_000
+
+/**
+ * 面板「Loomy 客户端」页路径（宿主半注册的路由）。
+ *
+ * 用**相对路径**而不是绝对 URL：面板端口是用户可配的，插件拿不到，
+ * 相对路径由前端按面板同源解析，不会写错端口。
+ */
+export const CLIENT_PAGE_PATH = '/router/api/loomy/client'
 
 /** OpenCode 配置文件名（模型清单兜底来源）。 */
 export const OPENCODE_CONFIG_FILE = 'opencode.json'

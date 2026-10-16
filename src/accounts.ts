@@ -113,7 +113,7 @@ export class AccountRegistry {
   }
 
   /** 本机登录态账号的展示名（含脱敏手机号，便于多账号辨认）。 */
-  private localNickname(data: LoomySessionFile): string {
+  localNickname(data: LoomySessionFile): string {
     const phone = typeof data.phone === 'string' && data.phone !== '' ? data.phone : ''
     return phone !== '' ? `本机客户端 · ${phone}` : '本机客户端'
   }

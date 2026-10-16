@@ -6,7 +6,8 @@
  * 行、无心跳注释，见 docs/loomy-upstream.md 实测记录）。因此：
  *
  * - 流式：**直接透传**上游字节（不做协议转换，也不需要重新序列化）；
- *   唯一的额外动作是用 `sniffLateFailure` 顺路嗅探「迟到失败」。
+ *   额外的动作只有两个：用 `sniffLateFailure` 顺路嗅探「迟到失败」，
+ *   以及用 `guardUpstreamStream` 校验收尾完整性（见该函数注释）。
  * - 非流式：上游给的是单个 JSON，原样交回；但若网关忽略 `stream:false`
  *   仍返回 SSE，则用 `aggregateSseToCompletion` 把帧聚合成一个
  *   `chat.completion` 对象（核心对非流式只认 JSON 体）。
@@ -76,25 +77,138 @@ export function stateFromFrameError(code: string, message: string): AccountState
   return 'unknown'
 }
 
+// ---------------------------------------------------------------------------
+// 流完整性守卫
+// ---------------------------------------------------------------------------
+
+/** 上游收尾形态。 */
+export type StreamVerdict = 'ok' | 'capped' | 'truncated'
+
+/** 收尾处置：原样放行 / 补一个 length 终止标记 / 扣住 [DONE] 逼核心重试。 */
+export type GuardAction = 'pass' | 'mark-length' | 'fail'
+
+/** 守卫在流末统计出的事实（供决策与日志）。 */
+export interface StreamStats {
+  /** 上游有没有给出非空 finish_reason。 */
+  sawFinishReason: boolean
+  /** 正文累计字符数。 */
+  contentChars: number
+  /** 推理累计字符数。 */
+  reasoningChars: number
+  /** 有没有出现工具调用分片。 */
+  sawToolCall: boolean
+  /** 上游自报的 completion_tokens（**含推理**）。 */
+  completionTokens?: number
+  /** 本次下发给上游的 max_tokens。 */
+  maxTokens?: number
+}
+
+export interface GuardOptions {
+  /** 本次下发给上游的 max_tokens，用于区分「撞上限」与「上游断流」。 */
+  maxTokens?: number
+  /** 流内错误帧（迟到失败）：上报核心，坏账号不会继续被轮转选中。 */
+  onLateFailure?: (state: AccountState, message: string) => void
+  /** 收尾处置决策；默认 ok→pass、capped→mark-length、truncated→fail。 */
+  decide?: (verdict: StreamVerdict, stats: StreamStats) => GuardAction
+  /** 判定结果回调（日志 / 计数）。 */
+  onVerdict?: (verdict: StreamVerdict, stats: StreamStats) => void
+}
+
+/** 默认处置：截断一律扣住 [DONE]，交给核心按 TRANSPORT 重试。 */
+export function defaultGuardAction(verdict: StreamVerdict): GuardAction {
+  if (verdict === 'ok') return 'pass'
+  if (verdict === 'capped') return 'mark-length'
+  return 'fail'
+}
+
 /**
- * 流式透传 + 迟到失败嗅探。
+ * 判定收尾形态。
  *
- * 响应头一旦写出就绑死（HTTP 语义）：流中途才发现「这个号/这把 Key 坏了」时
- * 这次请求救不回来，但必须通过 `env.onLateFailure` 上报核心，否则坏账号会继续
- * 留在池里被轮转选中，每次都白撞同一个错误（traework 的实测教训：3 个号里 2 个
- * 被拒，round-robin 下 2/3 请求直接失败）。
+ * 判据来自实测（2026-10-16）：
+ *   - 正常完成**一定**带 `finish_reason`（`stop` / `tool_calls`）；
+ *   - 上游截断时仍会发 `data: [DONE]`，**只是不给 `finish_reason`**；
+ *   - 撞 max_tokens 时同样不给 `finish_reason`，末帧是 `choices:[] + usage`，
+ *     故用 `completion_tokens >= maxTokens` 把「撞上限」摘出来单独处置。
  *
- * 嗅探**不改变字节流**：上游给什么就往下游传什么，只顺路看一眼错误帧。
+ * 另补一条：给了 `finish_reason` 但**只有推理、没有正文也没有工具调用**，
+ * 对 agent 来说同样是「没产出可用回答」，归入截断。
  */
-export function sniffLateFailure(
+export function verdictOf(stats: StreamStats): StreamVerdict {
+  if (!stats.sawFinishReason) {
+    const capped =
+      stats.maxTokens !== undefined &&
+      stats.maxTokens > 0 &&
+      stats.completionTokens !== undefined &&
+      stats.completionTokens >= stats.maxTokens
+    return capped ? 'capped' : 'truncated'
+  }
+  if (stats.contentChars === 0 && !stats.sawToolCall && stats.reasoningChars > 0) return 'truncated'
+  return 'ok'
+}
+
+/** 补齐 length 终止标记的合成帧（核心 mapFinishReason('length') → max-tokens）。 */
+const LENGTH_FRAME = new TextEncoder().encode(
+  `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] })}\n\n`,
+)
+const DONE_FRAME = new TextEncoder().encode('data: [DONE]')
+/** 输出侧保留的尾部字节数：够覆盖 `data: [DONE]` 被切在两个 chunk 之间的情形。 */
+const OUT_CARRY = 32
+
+function indexOfBytes(hay: Uint8Array, needle: Uint8Array): number {
+  const last = hay.length - needle.length
+  outer: for (let i = 0; i <= last; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (hay[i + j] !== needle[j]) continue outer
+    }
+    return i
+  }
+  return -1
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  if (a.length === 0) return b
+  if (b.length === 0) return a
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a, 0)
+  out.set(b, a.length)
+  return out
+}
+
+/**
+ * 流式透传 + 迟到失败嗅探 + **收尾完整性守卫**。
+ *
+ * 为什么需要收尾校验：上游（讯飞网关）会在生成没结束时就发 `[DONE]`，
+ * 只是不给 `finish_reason`。core 的适配器在 `[DONE]` 处若没见到
+ * `finish_reason` 就默认按 `stop` 收尾，于是**截断被当成正常完成**——
+ * 表现是「助手说要做却什么都没做，本轮就结束了」，且不报任何错。
+ * 唯一能发现这件事的地方就是这里（插件是唯一和上游对话的一方）。
+ *
+ * 处置手段是**扣住 `[DONE]` 不放**：core 见流结束却没有 `[DONE]`，会抛
+ * `SSE payload stream ended without [DONE]`（码 `TRANSPORT`），而 TRANSPORT
+ * 在 dsh-llm 的可重试白名单里，于是这一轮被自动重试而不是静默截断。
+ *
+ * 正常路径**字节级原样透传**（仅尾部保留 ≤32 字节再吐，用于识别跨 chunk 的
+ * `[DONE]`）；只有判定异常时才会改写收尾。
+ */
+export function guardUpstreamStream(
   stream: ReadableStream<Uint8Array>,
-  onError: (state: AccountState, message: string) => void,
+  options: GuardOptions = {},
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder()
+  const stats: StreamStats = {
+    sawFinishReason: false,
+    contentChars: 0,
+    reasoningChars: 0,
+    sawToolCall: false,
+    ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+  }
   let buffer = ''
   let reported = false
+  let carry: Uint8Array = new Uint8Array(0)
+  let held: Uint8Array | undefined
+  let holding = false
+
   const inspect = (text: string): void => {
-    if (reported) return
     buffer += text
     // 只处理**完整帧**（以空行结束），残留片段留到下一块
     const blocks = buffer.split(/\r?\n\r?\n/)
@@ -103,19 +217,45 @@ export function sniffLateFailure(
       if (!block.startsWith('data:')) continue
       const data = block.slice(5).trimStart().trim()
       if (data === '' || data === '[DONE]') continue
+      let json: Record<string, unknown>
       try {
-        const json = JSON.parse(data) as Record<string, unknown>
+        json = JSON.parse(data) as Record<string, unknown>
+      } catch {
+        // 半截 JSON / 非 JSON：忽略（透传路径不做协议校验）
+        continue
+      }
+      if (!reported) {
         const err = extractFrameError(json)
         if (err !== undefined) {
           reported = true
-          onError(stateFromFrameError(err.code, err.message), `upstream mid-stream error: ${err.message}`)
-          return
+          options.onLateFailure?.(
+            stateFromFrameError(err.code, err.message),
+            `upstream mid-stream error: ${err.message}`,
+          )
         }
-      } catch {
-        // 半截 JSON / 非 JSON：忽略（透传路径不做协议校验）
+      }
+      const usage = json.usage
+      if (typeof usage === 'object' && usage !== null) {
+        const ct = (usage as Record<string, unknown>).completion_tokens
+        // usage 可能拆在多帧里，取最大值（核心同口径）
+        if (typeof ct === 'number' && ct > (stats.completionTokens ?? -1)) stats.completionTokens = ct
+      }
+      const choices = json.choices
+      if (!Array.isArray(choices)) continue
+      for (const choice of choices as Array<Record<string, unknown>>) {
+        // 空串 = 「还没结束」，不能当成终止（与核心同口径）
+        if (typeof choice.finish_reason === 'string' && choice.finish_reason !== '') {
+          stats.sawFinishReason = true
+        }
+        const delta = choice.delta as Record<string, unknown> | undefined
+        if (delta === undefined) continue
+        if (typeof delta.content === 'string') stats.contentChars += delta.content.length
+        if (typeof delta.reasoning_content === 'string') stats.reasoningChars += delta.reasoning_content.length
+        if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) stats.sawToolCall = true
       }
     }
   }
+
   return stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
@@ -124,7 +264,53 @@ export function sniffLateFailure(
         } catch {
           // 嗅探失败绝不影响透传
         }
-        controller.enqueue(chunk)
+
+        if (holding) {
+          held = concatBytes(held ?? new Uint8Array(0), chunk)
+          return
+        }
+        // 尾部留 OUT_CARRY 字节不出，等下一块 —— 否则 `data: [DONE]` 跨 chunk
+        // 时会被前半段先吐出去，之后就扣不住了。
+        const merged = concatBytes(carry, chunk)
+        const at = indexOfBytes(merged, DONE_FRAME)
+        if (at >= 0) {
+          if (at > 0) controller.enqueue(merged.subarray(0, at))
+          held = merged.subarray(at)
+          holding = true
+          carry = new Uint8Array(0)
+          return
+        }
+        const keep = Math.min(OUT_CARRY, merged.length)
+        const emitLen = merged.length - keep
+        if (emitLen > 0) controller.enqueue(merged.subarray(0, emitLen))
+        carry = merged.subarray(emitLen)
+      },
+      flush(controller) {
+        const verdict = verdictOf(stats)
+        let action: GuardAction
+        try {
+          action = options.decide?.(verdict, stats) ?? defaultGuardAction(verdict)
+        } catch {
+          action = defaultGuardAction(verdict)
+        }
+        try {
+          options.onVerdict?.(verdict, stats)
+        } catch {
+          // 回调失败不影响收尾
+        }
+
+        // 上游压根没发 [DONE]：把残留字节原样吐出去，核心会按「缺 [DONE]」自己报错
+        if (!holding && carry.length > 0) controller.enqueue(carry)
+        if (action === 'pass') {
+          if (held !== undefined) controller.enqueue(held)
+          return
+        }
+        if (action === 'mark-length') {
+          controller.enqueue(LENGTH_FRAME)
+          if (held !== undefined) controller.enqueue(held)
+          return
+        }
+        // fail：扣住 [DONE] 不放，逼核心抛 TRANSPORT → dsh 自动重试
       },
     }),
   )
@@ -208,7 +394,9 @@ export function hasAssistantContent(body: Record<string, unknown>): boolean {
   const msg = (choices[0] as Record<string, unknown>).message as Record<string, unknown> | undefined
   if (msg === undefined) return false
   if (typeof msg.content === 'string' && msg.content.length > 0) return true
-  if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.length > 0) return true
+  // 注意：**只有 reasoning_content 不算有效回答**。上游截断时常常只吐推理、
+  // 正文为空，若把推理当内容，这种残缺响应会被当成成功，用户看到的就是
+  // 「话没讲完却没有任何报错」。（流式路径的同类判定见 verdictOf。）
   if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return true
   return false
 }
